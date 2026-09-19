@@ -1,0 +1,8 @@
+# Direct dependencies validated with Python 3.13.14.
+numpy==2.5.3
+pandas==3.0.5
+joblib==1.6.0
+yfinance==1.7.0
+pyarrow==25.0.1
+pandas_market_calendars==5.4.0
+scikit-learn==1.9.1
