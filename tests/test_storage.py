@@ -2,30 +2,39 @@
 
 import hashlib
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from nasdaq_volatility_lab.build_table import FEATURE_COLUMNS, build_feature_table, validate_feature_table
+from nasdaq_volatility_lab.features import (
+    FEATURE_COLUMNS,
+    build_feature_table,
+    validate_feature_table,
+)
 from nasdaq_volatility_lab.storage import load_feature_table
 
 
 class StorageTests(unittest.TestCase):
     def setUp(self):
         dates = pd.bdate_range(end="2005-01-31", periods=100)
-        prices = pd.DataFrame({
-            "Close": 100 * np.exp(np.arange(100) * 0.001), "Volume": 1000.0,
-        }, index=dates)
+        prices = pd.DataFrame(
+            {
+                "Close": 100 * np.exp(np.arange(100) * 0.001),
+                "Volume": 1000.0,
+            },
+            index=dates,
+        )
         self.table = build_feature_table(prices, prices.copy())
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "feature_table.parquet"
         self.table.reset_index().to_parquet(self.path, index=False)
         self.schema = {
-            "feature_columns": FEATURE_COLUMNS.copy(), "target_column": "target_vol_5d",
+            "feature_columns": FEATURE_COLUMNS.copy(),
+            "target_column": "target_vol_5d",
             "table_sha256": hashlib.sha256(self.path.read_bytes()).hexdigest(),
         }
         self.write_schema()

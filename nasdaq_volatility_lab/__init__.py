@@ -1,1 +1,1 @@
-"""QQQ volatility research: causal features and chronological evaluation."""
+"""Reproducible volatility forecasting with chronological validation."""

@@ -1,13 +1,9 @@
-"""Chronological splits and an audit of the fixed research protocol."""
+"""Chronological splits with explicit target-availability boundaries."""
 
 from dataclasses import dataclass
-import json
 
 import numpy as np
 import pandas as pd
-
-from .paths import ROOT
-from .storage import load_feature_table
 
 
 @dataclass
@@ -16,6 +12,11 @@ class TimeSplit:
     gap: pd.DataFrame
     evaluation: pd.DataFrame
     excluded_evaluation: pd.DataFrame
+
+    @property
+    def val(self) -> pd.DataFrame:
+        """Alias for the eligible chronological validation rows."""
+        return self.evaluation
 
 
 def chronological_split(table, start, end, *, label_cutoff=None, gap_sessions=5):
@@ -67,6 +68,7 @@ def chronological_split(table, start, end, *, label_cutoff=None, gap_sessions=5)
 
 def describe_split(name, split):
     """Record dates and counts only; do not calculate model performance."""
+
     def dates(frame):
         return frame.index.strftime("%Y-%m-%d").tolist()
 
@@ -83,47 +85,3 @@ def describe_split(name, split):
         "latest_evaluation_label_end": str(split.evaluation.label_end_date.max().date()),
         "excluded_evaluation_dates": dates(split.excluded_evaluation),
     }
-
-
-def main():
-    derived_dir = ROOT / "data" / "derived"
-    table_path = derived_dir / "feature_table.parquet"
-    table, schema = load_feature_table(table_path)
-    digest = schema["table_sha256"]
-    feature_columns = schema["feature_columns"]
-    audit = {
-        "table_sha256": digest, "gap_sessions": 5,
-        "test_start": "2025-01-01", "feature_columns": feature_columns,
-        "development_label_cutoff": "2025-01-01", "folds": [],
-    }
-    previous_train_dates = None
-    for year in range(2017, 2025):
-        outer = chronological_split(
-            table, f"{year}-01-01", f"{year + 1}-01-01", label_cutoff="2025-01-01"
-        )
-        # Reserve the last calendar year INSIDE outer training for future tuning.
-        inner = chronological_split(
-            outer.train, f"{year - 1}-01-01", f"{year}-01-01",
-            label_cutoff=outer.evaluation.index[0],
-        )
-        if not (inner.train.index.isin(outer.train.index).all()):
-            raise ValueError('Inner training extends beyond outer training.')
-        if not (inner.evaluation.index.isin(outer.train.index).all()):
-            raise ValueError('Inner validation extends beyond outer training.')
-        if previous_train_dates is not None:
-            if not (previous_train_dates.isin(outer.train.index).all()):
-                raise ValueError('Expanding-window training unexpectedly lost earlier dates.')
-        previous_train_dates = outer.train.index
-        record = describe_split(f"validation_{year}", outer)
-        record["inner"] = describe_split(f"inner_{year - 1}", inner)
-        audit["folds"].append(record)
-    # Boundary audit only: no fitting, predictions, or test scoring.
-    final = chronological_split(table, "2025-01-01", "2026-01-01")
-    audit["final_test"] = describe_split("final_test_2025", final)
-    audit["status"] = "boundaries_verified_no_models_trained_or_scored"
-    output = derived_dir / "split_manifest.json"
-    output.write_text(json.dumps(audit, indent=2) + "\n", encoding="utf-8")
-
-
-if __name__ == "__main__":
-    main()

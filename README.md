@@ -1,133 +1,179 @@
-# nasdaq_volatility_lab
+# nasdaq-volatility-lab
 
-A Python research project predicting QQQ's next five trading days of annualized
-volatility from daily QQQ and SPY data. Predictions are made after the close;
-the target measures volatility, not price direction or investment returns.
+A command-line workflow for forecasting QQQ's next five trading days of
+annualized volatility using QQQ and SPY daily data. It downloads and validates
+data, trains a mean baseline, Ridge and XGBoost, and saves comparable results.
+Predictions use information available after the close of each feature date.
 
-## Current status
+## Setup
 
-Completed through Day 2: fixed data snapshots, quality checks, 12 causal features,
-future labels, chronological splits, a historical-volatility baseline, and a
-StandardScaler → Ridge Pipeline. Only the 2017 development fold has been scored.
-XGBoost, full walk-forward model evaluation, and the interface remain planned.
-The 2025 final test has not been scored.
+Python 3.12+ is required; dependencies were validated on Python 3.13.14.
 
-## Repository layout
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+On macOS, XGBoost requires OpenMP (`brew install libomp`). On Windows, activate
+with `.venv\Scripts\Activate.ps1`. Direct dependencies are pinned in
+`requirements.txt`; this is not a complete cross-platform dependency lock.
+
+## Commands
+
+The interface uses Python’s standard-library `argparse`: three subcommands and
+explicit flags need no additional CLI framework dependency.
+
+Run from the repository root with the environment activated:
+
+```sh
+nasdaq-volatility-lab fetch-data
+nasdaq-volatility-lab train
+nasdaq-volatility-lab show-results --plot
+```
+
+`python -m nasdaq_volatility_lab` is an equivalent entry point. Only `fetch-data`
+needs network access. Both entry points default to the current directory as the
+data/output workspace; use `--project-dir /path/to/workspace` **before** the
+subcommand to use another location. `--debug` shows full error tracebacks.
+
+### Fetch data
+
+```sh
+nasdaq-volatility-lab fetch-data --start-date 2005-01-01 --end-date 2025-12-31
+```
+
+Dates are inclusive and specify the feature-table range. Six months of earlier
+data are downloaded automatically for rolling-feature warm-up. The end date
+must precede today in New York to exclude incomplete daily bars. The default
+range is fixed at 2005–2025; updating beyond it requires an explicit end date.
+
+Both ETFs must pass calendar, OHLC, missing-value and volume checks. The command
+prints the row count, labeled row count, date range and feature names. The final
+five rows have no complete future target and are retained but excluded from
+scoring. A successful refresh publishes a complete snapshot and feature table;
+previous data is moved to `artifacts/data_backups/`. Download or validation
+failures retain the existing data. Different adjusted-price vintages are never
+stitched together. Provider revisions may change historical values.
+
+### Train models
+
+```sh
+nasdaq-volatility-lab train --model all
+nasdaq-volatility-lab train --model ridge --alpha 10
+nasdaq-volatility-lab train --model xgboost --learning-rate 0.03 --n-estimators 1500
+nasdaq-volatility-lab train --validation-start 2020-01-01 --validation-end 2021-01-01
+```
+
+Training requires `data/derived/feature_table.parquet` and its hash-checked schema;
+it never downloads data. Each invocation creates a new run ID. By default,
+`split.train` contains data before 2017, excluding a five-session gap, and
+`split.val` contains eligible 2017 rows. `--validation-end` is **exclusive**.
+No random split is used. All selected models use the same training and validation
+rows. The original local snapshot gives 3,016 training rows and 251 validation rows.
+
+| Model | Fitting procedure |
+| --- | --- |
+| `baseline` | `DummyRegressor(strategy="mean")`: every prediction equals the training target mean, the optimal constant for training squared-error loss. |
+| `ridge` | Training-only `StandardScaler` → `Ridge(alpha=1, solver="svd")`. Override with `--alpha`. |
+| `xgboost` | Automatically select parameters and tree count on an inner chronological split, then refit on all outer training rows. |
+
+XGBoost uses `reg:squarederror` to fit trees and **inner validation MAE** for
+selection. Inner validation is the last calendar year represented in outer
+training, with its own five-session gap. Defaults search these three
+`(max_depth, reg_lambda)` pairs: `(2, 1)`, `(2, 10)`, `(3, 10)`.
+`--max-depth` or `--reg-lambda` fixes that dimension and duplicate candidates
+are removed. At equal MAE, prefer lower depth, then higher L2 penalty.
+
+Every candidate uses `learning_rate=0.05`, at most 1,000 boosting rounds and
+30 rounds of early-stopping patience. `--learning-rate`, `--n-estimators` and
+`--early-stopping-rounds` override these values. **`--n-estimators` is a search
+ceiling, not the final tree count.** The winner is refitted using
+`best_iteration + 1` trees with no outer validation data passed to fitting.
+The run records candidate learning curves, selected parameters and whether the
+round ceiling was reached. The run needs history before the inner validation
+year; otherwise fetch a longer range or select a later validation start.
+
+Predictions are clipped at zero to respect the volatility domain. Saved
+estimators return raw predictions; use `models.predict_volatility` after loading
+an artifact to reproduce this rule. Load Ridge/baseline with `joblib.load` and
+XGBoost with `XGBRegressor().load_model`. The baseline artifact stores its fitted
+constant; Ridge stores both the scaler and coefficients; XGBoost stores trees.
+
+Each success line includes the run ID, model, training/validation counts, total
+training time and key parameters. XGBoost total time includes candidate search
+and final refit; metrics, serialization and plotting are excluded. Search/refit
+times are also recorded separately.
+
+### Show results
+
+```sh
+nasdaq-volatility-lab show-results
+nasdaq-volatility-lab show-results --metric mae
+nasdaq-volatility-lab show-results --run-id RUN_ID --plot
+```
+
+The default displays the latest **completed invocation**, containing only the
+models trained in that invocation. Use `train --model all` for a three-model
+comparison. Results from different runs are not combined. `--metric` accepts
+`mse`, `mae`, `rmse` or `r2`, shows just that metric, and sorts models by validation
+performance (R² descending, errors ascending, undefined values last).
+
+The table contains train/validation metrics and training time. MAE and RMSE use
+**percentage points (pp)**; MSE uses **pp²**; R² is dimensionless. For example,
+MAE `0.04` in stored decimal units displays as `4.0000 pp`. R² is `N/A` for
+constant targets or fewer than two samples. JSON logs retain full precision in
+explicitly documented decimal units. The optional plot overlays actual and
+model validation predictions, with volatility **levels in %** on the y-axis.
+
+## Files
 
 ```text
-nasdaq_volatility_lab/     Importable Python package and executable workflow modules
-  build_table.py    Pure feature functions and feature-table creation
-  split_data.py     Chronological splitting and boundary audit
-  storage.py        Shared artifact integrity and schema validation
-  train_ridge.py    StandardScaler → Ridge and 2017 evaluation
-  baseline.py       Historical-volatility evaluation
-  metrics.py        Shared MAE/RMSE calculation
-  check_data.py     Snapshot quality checks
-  download_data.py  Fixed snapshot acquisition
-  paths.py          Checkout-relative data/output location
-tests/              Synthetic unit tests and optional snapshot regression test
-docs/               Data provenance, feature definitions, split protocol
-data/               Local snapshots and derived tables (ignored)
-artifacts/          Local reports, predictions, and models (ignored)
+nasdaq_volatility_lab/
+  cli.py             argparse command definitions and concise console output
+  data.py            data acquisition, quality checks and snapshot publication
+  quality.py         independent price/calendar validation
+  features.py        pure feature and target calculations
+  splits.py          chronological train/gap/validation boundaries
+  models.py          estimators, inner selection and prediction rule
+  training.py        fitting workflow and completed-run publication
+  metrics.py         common regression metrics
+  reporting.py       tables and optional prediction plot
+  storage.py         schemas, hashes, run IDs and workspace locking
+  __main__.py        python -m entry point
+pyproject.toml       package and console-script configuration
+requirements.txt    direct runtime dependencies
+tests/              offline feature, leakage, persistence and CLI tests
+docs/               data conventions, feature definitions and split protocol
+data/               snapshots and derived features (Git-ignored)
+models/<run-id>/     fitted .joblib/.ubj artifacts (Git-ignored)
+results/<run-id>/    run.json, predictions.parquet, optional comparison.png
+results/train_log.jsonl  one JSON record per model, sharing the invocation run ID
 ```
 
-Run modules from the repository root using `python -m nasdaq_volatility_lab.<module>`.
-Imports have no download, training, or file-writing side effects.
+A run records data/artifact hashes, feature order, split dates, counts, clipping
+counts, metrics, selection details, dependency versions and Git commit/dirty
+status. A `run.json` manifest marks completion; incomplete runs are ignored.
+A workspace lock prevents simultaneous data refresh and training writes.
 
-## Setup and reproduction
+## Method and validation
 
-Validated locally with Python 3.13.14. From the repository directory:
+The target is `sqrt((252 / 5) * sum(r_(t+i)^2 for i=1..5))`, where
+`r_t = ln(P_t / P_(t-1))` uses adjusted closing prices. It is an annualized
+realized-volatility RMS measure with an assumed zero daily mean, not a price or
+return forecast. A target of `0.25` means 25% annualized volatility.
+
+The 12 causal inputs cover QQQ returns, historical volatility, price positions
+and relative volume, plus SPY returns and volatility. See [features](docs/FEATURES.md),
+[data conventions](docs/DATA.md) and [split boundaries](docs/SPLITS.md).
 
 ```sh
-python3.13 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 ```
 
-On Windows, activate with `.venv\Scripts\Activate.ps1` in PowerShell.
-Tests using local market data skip when the snapshot is absent; synthetic
-label, split, quality, and Ridge tests run without downloading data.
-
-To reproduce the current workflow, run these commands in order, stopping if any
-command fails. Only the download step needs network access:
-
-```sh
-python -m nasdaq_volatility_lab.download_data
-python -m nasdaq_volatility_lab.check_data
-python -m nasdaq_volatility_lab.build_table
-python -m nasdaq_volatility_lab.split_data
-python -m nasdaq_volatility_lab.baseline
-python -m nasdaq_volatility_lab.train_ridge
-python -m unittest discover -s tests -v
-```
-
-Skip `download_data.py` if you already have the fixed snapshot. It deliberately
-refuses to overwrite `data/snapshot/`. Provider revisions mean a new download
-may not reproduce the original snapshot or metrics exactly. Direct dependencies
-are pinned; this is not a complete cross-platform dependency lock.
-
-Modules are silent on success and raise errors on failure. Runtime validation
-also runs under `python -O`. Generated outputs remain
-local and are ignored by Git:
-
-| Path | Contents |
-| --- | --- |
-| `data/snapshot/` | QQQ/SPY Parquet files and download metadata |
-| `artifacts/data_quality.json` | Quality checks and review notes |
-| `data/derived/` | Feature table, schema, hashes, and split manifest |
-| `artifacts/baseline_2017/` | Baseline predictions and metrics |
-| `artifacts/ridge_2017/` | Ridge predictions, metrics, and fitted Pipeline |
-
-Rebuilding derived data or running evaluation replaces the corresponding output
-files. A quality report failure requires investigation before continuing.
-
-## Method
-
-Daily log returns are `r_t = ln(P_t / P_(t-1))`, using adjusted closing prices.
-The target is `sqrt((252 / 5) * sum(r_(t+i)^2 for i=1..5))`, a zero-mean RMS
-proxy for annualized realized volatility. A target of `0.25` means 25% annualized
-volatility. The final five rows retain their inputs but have no complete target.
-
-The 12 inputs describe QQQ returns, historical volatility, volatility ratio,
-drawdown, moving-average deviation, relative volume, and SPY returns/volatility.
-See [FEATURES.md](docs/FEATURES.md) for exact definitions.
-
-Training starts in 2005, with 2004 data used only for feature warm-up.
-Development folds cover 2017–2024; 2025 is reserved for final testing.
-Every split excludes five trading rows before evaluation and checks that training
-labels end before evaluation starts. Development labels cannot extend into 2025.
-See [SPLITS.md](docs/SPLITS.md) for the full boundary protocol.
-
-The baseline predicts today's trailing 20-day volatility. The Ridge model uses
-`StandardScaler` fitted only on training rows, followed by
-`Ridge(alpha=1.0, solver="svd")`. Negative predictions are clipped to zero and
-counted by the evaluation code. The saved Pipeline itself returns raw predictions;
-apply the same clipping rule when using it. Its implementation is in
-[train_ridge.py](nasdaq_volatility_lab/train_ridge.py).
-
-## Initial development results
-
-Original local snapshot: 3,016 training rows and 251 validation rows in 2017.
-Errors below are **percentage points of annualized volatility**.
-
-| Model | MAE | RMSE |
-| --- | ---: | ---: |
-| 20-day historical volatility | 4.0507 | 5.1290 |
-| Ridge, alpha = 1 | 3.9814 | 4.8422 |
-
-Ridge produced no negative predictions on this fold. This small single-year
-improvement does not establish generalization or statistical significance.
-Five-day labels overlap, so daily errors are not independent. No tuning or
-final-test scoring has been performed.
-
-## Data and project notes
-
-Yahoo Finance data is downloaded through yfinance. Adjusted prices account for
-provider adjustments and are not historical executable quotes. The snapshot was
-downloaded after the study period and is not a point-in-time data archive.
-See [DATA.md](docs/DATA.md) for provenance, volume limitations, and quality findings.
-Market data, fitted models, caches, and credentials are excluded from commits.
-
-Learning notes are maintained locally and excluded from version control.
-This repository is an educational research project, not a trading system.
+Synthetic tests run offline. The optional local snapshot equivalence test skips
+if data is absent. The default 2017 period has been viewed during development;
+its results are validation results, not a fresh blind test. Overlapping five-day
+targets make errors dependent. Retrospectively adjusted data is not a
+point-in-time archive. This CLI provides reproducible research evaluation, not
+production deployment, live risk controls or a trading strategy.

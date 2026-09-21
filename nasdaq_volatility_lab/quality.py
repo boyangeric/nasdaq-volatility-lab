@@ -1,13 +1,7 @@
 """Write a structured quality report without modifying the snapshots."""
 
-from pathlib import Path
-import json
-
 import numpy as np
 import pandas as pd
-import pandas_market_calendars as mcal
-
-from .paths import ROOT
 
 
 def exceeds(left, right):
@@ -49,54 +43,26 @@ def inspect_prices(prices, expected_dates):
     unexpected_dates = prices.index.difference(expected_dates)
     missing_cells = {name: int(count) for name, count in prices.isna().sum().items()}
     blocking = any(
-        item["count"] for name, item in findings.items()
+        item["count"]
+        for name, item in findings.items()
         if name != "Close outside low/high (strict)"
     )
     passed = (
-        not prices.empty and prices.index.is_monotonic_increasing
-        and prices.index.is_unique and not any(missing_cells.values())
-        and missing_dates.empty and unexpected_dates.empty and not blocking
+        not prices.empty
+        and prices.index.is_monotonic_increasing
+        and prices.index.is_unique
+        and not any(missing_cells.values())
+        and missing_dates.empty
+        and unexpected_dates.empty
+        and not blocking
     )
     return {
-        "rows": len(prices), "sorted": prices.index.is_monotonic_increasing,
+        "rows": len(prices),
+        "sorted": prices.index.is_monotonic_increasing,
         "duplicate_dates": int(prices.index.duplicated().sum()),
-        "missing_cells": missing_cells, "findings": findings,
+        "missing_cells": missing_cells,
+        "findings": findings,
         "missing_dates": missing_dates.strftime("%Y-%m-%d").tolist(),
         "unexpected_dates": unexpected_dates.strftime("%Y-%m-%d").tolist(),
         "passed": bool(passed),
     }
-
-
-def inspect_snapshot(snapshot_dir):
-    """Return counts and findings; strict floating-point flags remain visible."""
-    snapshot_dir = Path(snapshot_dir)
-    metadata = json.loads((snapshot_dir / "metadata.json").read_text())
-    params = metadata["parameters"]
-    calendar = mcal.get_calendar("NASDAQ")
-    expected = calendar.schedule(
-        start_date=params["start"],
-        end_date=pd.Timestamp(params["end"]) - pd.Timedelta(days=1),
-    ).index
-    frames = {ticker: pd.read_parquet(snapshot_dir / f"{ticker}.parquet") for ticker in ("QQQ", "SPY")}
-    reports = {ticker: inspect_prices(frame, expected) for ticker, frame in frames.items()}
-    aligned = frames["QQQ"].index.equals(frames["SPY"].index)
-    return {
-        "calendar_version": mcal.__version__, "calendar_alias": "NASDAQ",
-        "expected_sessions": len(expected), "dates_aligned": aligned,
-        "tickers": reports,
-        "passed": aligned and all(report["passed"] for report in reports.values()),
-    }
-
-
-def main():
-    root = ROOT
-    report = inspect_snapshot(root / "data" / "snapshot")
-    output = root / "artifacts" / "data_quality.json"
-    output.parent.mkdir(exist_ok=True)
-    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    if not report["passed"]:
-        raise ValueError(f"Data quality checks require review: {output}")
-
-
-if __name__ == "__main__":
-    main()

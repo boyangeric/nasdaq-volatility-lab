@@ -6,3 +6,5 @@ yfinance==1.7.0
 pyarrow==25.0.1
 pandas_market_calendars==5.4.0
 scikit-learn==1.9.1
+xgboost==3.4.1
+matplotlib==3.11.2

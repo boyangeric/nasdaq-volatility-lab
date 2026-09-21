@@ -16,3 +16,11 @@ data/
 artifacts/
 /plan.md
 .md
+models/
+results/
+*.egg-info/
+build/
+dist/
+/.nasdaq-volatility-lab.lock
+/.fetch-*/
+/.train-*/

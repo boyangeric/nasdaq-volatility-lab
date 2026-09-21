@@ -1,12 +1,13 @@
 # Feature table
 
-Run `python -m nasdaq_volatility_lab.build_table` to rebuild `data/derived/feature_table.parquet` and `feature_schema.json` from the fixed local snapshots. Runtime schema and missing-value checks run before saving; the saved table is read back and compared with the in-memory table. Hand-worked examples, causality checks, and saved-table equivalence checks live in `tests/test_features.py`. Rebuilding replaces these derived outputs, not the source snapshots.
+`nasdaq-volatility-lab fetch-data` generates `data/derived/feature_table.parquet`
+and `feature_schema.json`. `features.build_feature_table` calculates the same
+table without file I/O. Training reads the existing table and verifies its
+hash, explicit feature whitelist, target horizon and missing-value pattern.
 
-`build_feature_table(qqq_prices, spy_prices)` returns a DataFrame without file I/O. Importing the module does not rebuild data. Scripts are silent on success and report results through saved files or return values. Run `python -m unittest discover -s tests -v` for the full test suite.
-
-Existing artifacts retain hashes identifying the source code used for their original run. Code cleanup does not retroactively rewrite those records. Newly generated outputs record the current source hash.
-
-The table contains 5,283 rows from 2005-01-03 through 2025-12-31, with 12 input features, two date columns, and one target. Calculations use the 2004 warm-up before selecting study rows. There are 5,278 complete targets and five incomplete targets. The saved table remains unsplit; `split_data.py` selects subsets under the protocol in `SPLITS.md`.
+The default 2005–2025 range contains 5,283 rows in the original local snapshot,
+including 5,278 complete targets. Requested ranges may produce different counts.
+The table stays unsplit until `train` applies the chronological split.
 
 ## Definitions and units
 
@@ -35,8 +36,8 @@ Returns and price distances are not annualized. Volatility `0.25` displays as `2
 ## Missing values and model inputs
 
 - Only columns explicitly listed in `feature_schema.json` under `feature_columns` belong in X. Neither target nor date metadata belongs in X. Temporary future-return columns are not exported.
-- Current study inputs are finite and complete. Future input gaps must be investigated; do not silently fill or remove them.
+- Model inputs are finite and complete. Future input gaps must be investigated; do not silently fill or remove them.
 - Ratios with zero or missing denominators remain NaN. A genuine zero current volume with a positive historical mean gives ratio zero, but should still be reviewed under the source-data checks.
 - The last five rows (2025-12-24, 26, 29, 30, 31) lack complete future observations within this snapshot. Their target is NaN and their label-end date is NaT. Their features remain available.
-- A row with a missing target cannot be used as a labeled training/evaluation sample. It can supply inputs for inference. Labeled rows still require chronological splitting and the planned five-session gap.
+- A row with a missing target cannot be used as a labeled training/evaluation sample. It can supply inputs for inference. Labeled rows still require chronological splitting and the five-session gap.
 - Source-file, builder, and output hashes are recorded in the schema. Data-source limitations remain those documented in `DATA.md`. Derived data stays local under the ignored `data/` directory.

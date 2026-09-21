@@ -1,21 +1,21 @@
 """Build the validated feature table from fixed local snapshots."""
 
-from datetime import datetime, timezone
-from pathlib import Path
-import hashlib
-import json
-
 import numpy as np
 import pandas as pd
 
-from .paths import ROOT
-
 FEATURE_COLUMNS = [
-    "qqq_return_1d", "qqq_return_5d", "qqq_return_20d",
-    "qqq_vol_5d", "qqq_vol_20d", "qqq_vol_60d", "qqq_vol_ratio_5_20",
-    "qqq_drawdown_60d", "qqq_ma_deviation_20d",
+    "qqq_return_1d",
+    "qqq_return_5d",
+    "qqq_return_20d",
+    "qqq_vol_5d",
+    "qqq_vol_20d",
+    "qqq_vol_60d",
+    "qqq_vol_ratio_5_20",
+    "qqq_drawdown_60d",
+    "qqq_ma_deviation_20d",
     "qqq_relative_volume_20d",
-    "spy_return_5d", "spy_vol_20d",
+    "spy_return_5d",
+    "spy_vol_20d",
 ]
 
 
@@ -78,7 +78,7 @@ def validate_feature_table(table):
         raise ValueError("Labels must end after their prediction dates.")
 
 
-def build_feature_table(prices, spy_prices):
+def build_feature_table(prices, spy_prices, start_date="2005-01-01", end_date="2025-12-31"):
     """Calculate causal inputs and future labels without reading or writing files."""
     for frame in (prices, spy_prices):
         if not isinstance(frame.index, pd.DatetimeIndex) or frame.index.hasnans:
@@ -91,8 +91,18 @@ def build_feature_table(prices, spy_prices):
             raise ValueError("Price dates must be sorted and unique.")
     if not prices.index.equals(spy_prices.index):
         raise ValueError("Investigate mismatched ETF dates before joining.")
-    if "Volume" not in prices or not np.isfinite(prices["Volume"]).all() or (prices["Volume"] < 0).any():
+    if (
+        "Volume" not in prices
+        or not np.isfinite(prices["Volume"]).all()
+        or (prices["Volume"] < 0).any()
+    ):
         raise ValueError("QQQ volume must be finite and nonnegative.")
+    # Normalize date precision before Parquet serialization. Providers may
+    # return seconds while Arrow stores at least milliseconds; values stay exact.
+    prices = prices.loc[:end_date].copy()
+    spy_prices = spy_prices.loc[:end_date].copy()
+    prices.index = prices.index.as_unit("ms")
+    spy_prices.index = spy_prices.index.as_unit("ms")
     spy_daily_return = cumulative_log_return(spy_prices["Close"], 1)
     daily_return = np.log(prices["Close"] / prices["Close"].shift(1))
 
@@ -113,68 +123,16 @@ def build_feature_table(prices, spy_prices):
     table["label_end_date"] = pd.Series(prices.index, index=prices.index).shift(-5)
 
     # Future information is kept separate from the historical feature columns.
-    future_returns = pd.DataFrame({
-        f"r_plus_{step}": daily_return.shift(-step)
-        for step in range(1, 6)
-    })
+    future_returns = pd.DataFrame(
+        {f"r_plus_{step}": daily_return.shift(-step) for step in range(1, 6)}
+    )
 
     # Require a complete five-return window; never substitute a shorter horizon.
     squared_sum = future_returns.pow(2).sum(axis=1, min_count=5)
     table["target_vol_5d"] = np.sqrt((252 / 5) * squared_sum)
 
-    # Compute with warm-up first, then restrict rows to the main study period.
-    table = table.loc["2005-01-01":"2025-12-31"]
+    # Build features with warm-up data before selecting the requested date range.
+    table = table.loc[start_date:end_date]
 
     validate_feature_table(table)
     return table
-
-
-def main():
-    snapshot_path = ROOT / "data" / "snapshot" / "QQQ.parquet"
-    # Check the full snapshot before deriving features; a skipped CLI step must
-    # not silently allow calendar gaps or invalid OHLC data into model inputs.
-    from .check_data import inspect_snapshot
-
-    if not inspect_snapshot(snapshot_path.parent)["passed"]:
-        raise ValueError("Snapshot quality checks failed; run the quality report for details.")
-    prices = pd.read_parquet(snapshot_path)
-    spy_prices = pd.read_parquet(snapshot_path.with_name("SPY.parquet"))
-    table = build_feature_table(prices, spy_prices)
-    feature_columns = FEATURE_COLUMNS
-    labeled = table["target_vol_5d"].notna()
-    # Save only after all checks pass. Dates and targets are not model inputs.
-    output_dir = snapshot_path.parents[1] / "derived"
-    output_dir.mkdir(exist_ok=True)
-    output_path = output_dir / "feature_table.parquet"
-    saved_table = table[feature_columns + ["label_end_date", "target_vol_5d"]].reset_index()
-    saved_table.to_parquet(output_path, index=False, engine="pyarrow")
-    pd.testing.assert_frame_equal(saved_table, pd.read_parquet(output_path))
-
-    schema = {
-        "schema_version": 1,
-        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "feature_columns": feature_columns,
-        "target_column": "target_vol_5d",
-        "date_columns": ["feature_date", "label_end_date"],
-        "horizon_trading_days": 5,
-        "annualization_factor": 252,
-        "row_count": len(saved_table),
-        "labeled_row_count": int(labeled.sum()),
-        "unlabeled_row_count": int((~labeled).sum()),
-        "date_range": [str(table.index.min().date()), str(table.index.max().date())],
-        "units_documentation": "docs/FEATURES.md",
-        "missing_policy": "Preserve incomplete targets and label-end dates; do not fill with zero.",
-        "source_sha256": {
-            name: hashlib.sha256(snapshot_path.with_name(name).read_bytes()).hexdigest()
-            for name in ("QQQ.parquet", "SPY.parquet", "metadata.json")
-        },
-        "builder_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        "table_sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
-    }
-    (output_dir / "feature_schema.json").write_text(
-        json.dumps(schema, indent=2) + "\n", encoding="utf-8"
-    )
-
-
-if __name__ == "__main__":
-    main()

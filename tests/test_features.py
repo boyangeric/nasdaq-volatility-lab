@@ -1,13 +1,20 @@
 """Synthetic feature contracts plus optional local-snapshot regression coverage."""
 
 import math
-from pathlib import Path
 import unittest
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from nasdaq_volatility_lab.build_table import (
-    build_feature_table, cumulative_log_return, historical_volatility,
-    volatility_ratio, rolling_drawdown, moving_average_deviation, relative_volume,
+
+from nasdaq_volatility_lab.features import (
+    build_feature_table,
+    cumulative_log_return,
+    historical_volatility,
+    moving_average_deviation,
+    relative_volume,
+    rolling_drawdown,
+    volatility_ratio,
 )
 
 
@@ -17,13 +24,19 @@ class FeatureTests(unittest.TestCase):
         # Deterministic, nonconstant inputs exercise every rolling window offline.
         dates = pd.bdate_range("2004-07-01", "2010-02-01")
         steps = np.arange(len(dates))
-        cls.prices = pd.DataFrame({
-            "Close": 100 * np.exp(np.cumsum(0.001 + 0.005 * np.sin(steps))),
-            "Volume": 1000.0 + steps % 31,
-        }, index=dates)
-        cls.spy_prices = pd.DataFrame({
-            "Close": 80 * np.exp(np.cumsum(0.0005 + 0.003 * np.cos(steps))),
-        }, index=dates)
+        cls.prices = pd.DataFrame(
+            {
+                "Close": 100 * np.exp(np.cumsum(0.001 + 0.005 * np.sin(steps))),
+                "Volume": 1000.0 + steps % 31,
+            },
+            index=dates,
+        )
+        cls.spy_prices = pd.DataFrame(
+            {
+                "Close": 80 * np.exp(np.cumsum(0.0005 + 0.003 * np.cos(steps))),
+            },
+            index=dates,
+        )
         cls.table = build_feature_table(cls.prices, cls.spy_prices)
 
     def test_preserves_both_inputs(self):
@@ -46,7 +59,7 @@ class FeatureTests(unittest.TestCase):
         first_date = table.index[0]
         position = prices.index.get_loc(first_date)
         # Independently reconstruct the first study label from six closing prices.
-        window_prices = prices["Close"].iloc[position:position + 6].tolist()
+        window_prices = prices["Close"].iloc[position : position + 6].tolist()
         window_returns = [
             math.log(current / previous)
             for previous, current in zip(window_prices, window_prices[1:])
@@ -82,8 +95,8 @@ class FeatureTests(unittest.TestCase):
         changed_returns = cumulative_log_return(changed_close, 1)
         for window in (5, 20, 60):
             toy_vol = historical_volatility(toy_returns, window)
-            assert toy_vol.iloc[:window - 1].isna().all()
-            np.testing.assert_allclose(toy_vol.iloc[window - 1:], 0.01 * math.sqrt(252))
+            assert toy_vol.iloc[: window - 1].isna().all()
+            np.testing.assert_allclose(toy_vol.iloc[window - 1 :], 0.01 * math.sqrt(252))
             pd.testing.assert_series_equal(
                 historical_volatility(daily_return, window).loc[:cutoff],
                 historical_volatility(changed_returns, window).loc[:cutoff],
@@ -98,7 +111,9 @@ class FeatureTests(unittest.TestCase):
             volatility_ratio(
                 historical_volatility(changed_returns, 5),
                 historical_volatility(changed_returns, 20),
-            ).reindex(table.index).loc[:cutoff],
+            )
+            .reindex(table.index)
+            .loc[:cutoff],
             check_names=False,
         )
 
@@ -114,7 +129,7 @@ class FeatureTests(unittest.TestCase):
         assert math.isclose(moving_average_deviation(toy_close, 2).iloc[1], 80 / 90 - 1)
         assert table["qqq_drawdown_60d"].between(-1, 0, inclusive="right").all()
         for function, window in ((rolling_drawdown, 60), (moving_average_deviation, 20)):
-            assert function(prices["Close"], window).iloc[:window - 1].isna().all()
+            assert function(prices["Close"], window).iloc[: window - 1].isna().all()
             assert function(pd.Series([0.0] * window), window).isna().all()
             pd.testing.assert_series_equal(
                 function(prices["Close"], window).loc[:cutoff],
@@ -134,7 +149,7 @@ class FeatureTests(unittest.TestCase):
         assert pd.isna(relative_volume(pd.Series([0.0] * 20 + [100.0])).iloc[20])
         assert relative_volume(pd.Series([100.0] * 20 + [0.0])).iloc[20] == 0.0
         manual_relative_volume = prices["Volume"].iloc[position] / (
-            math.fsum(prices["Volume"].iloc[position - 20:position]) / 20
+            math.fsum(prices["Volume"].iloc[position - 20 : position]) / 20
         )
         assert math.isclose(
             table.loc[first_date, "qqq_relative_volume_20d"], manual_relative_volume, rel_tol=1e-12
@@ -153,14 +168,17 @@ class FeatureTests(unittest.TestCase):
         cutoff = pd.Timestamp("2010-01-04")
         # Independently check SPY values on the first QQQ feature date.
         spy_position = spy_prices.index.get_loc(first_date)
-        spy_window = spy_prices["Close"].iloc[spy_position - 20:spy_position + 1].tolist()
+        spy_window = spy_prices["Close"].iloc[spy_position - 20 : spy_position + 1].tolist()
         spy_manual_returns = [math.log(b / a) for a, b in zip(spy_window, spy_window[1:])]
         assert math.isclose(
-            table.loc[first_date, "spy_return_5d"], math.fsum(spy_manual_returns[-5:]), rel_tol=1e-10
+            table.loc[first_date, "spy_return_5d"],
+            math.fsum(spy_manual_returns[-5:]),
+            rel_tol=1e-10,
         )
         assert math.isclose(
             table.loc[first_date, "spy_vol_20d"],
-            math.sqrt(252 / 20 * math.fsum(r * r for r in spy_manual_returns)), rel_tol=1e-12
+            math.sqrt(252 / 20 * math.fsum(r * r for r in spy_manual_returns)),
+            rel_tol=1e-12,
         )
         changed_spy_close = spy_prices["Close"].copy()
         changed_spy_close.loc[changed_spy_close.index > cutoff] *= 1.5
@@ -183,7 +201,15 @@ class FeatureSnapshotTests(unittest.TestCase):
             raise unittest.SkipTest("Local market snapshot is not available.")
         cls.prices = pd.read_parquet(snapshot / "QQQ.parquet")
         cls.spy_prices = pd.read_parquet(snapshot / "SPY.parquet")
-        cls.table = build_feature_table(cls.prices, cls.spy_prices)
+        schema_path = cls.root / "data/derived/feature_schema.json"
+        if not schema_path.exists():
+            raise unittest.SkipTest("Local feature schema is not available.")
+        import json
+
+        schema = json.loads(schema_path.read_text())
+        start, end = schema.get("requested_range", ["2005-01-01", "2025-12-31"])
+        cls.start, cls.end = start, end
+        cls.table = build_feature_table(cls.prices, cls.spy_prices, start, end)
 
     def test_matches_saved_table_and_preserves_inputs(self):
         saved_path = self.root / "data" / "derived" / "feature_table.parquet"
@@ -192,7 +218,6 @@ class FeatureSnapshotTests(unittest.TestCase):
         expected = pd.read_parquet(saved_path)
         pd.testing.assert_frame_equal(self.table.reset_index()[expected.columns], expected)
         before = self.prices.copy(deep=True)
-        build_feature_table(self.prices, self.spy_prices)
+        build_feature_table(self.prices, self.spy_prices, self.start, self.end)
         pd.testing.assert_frame_equal(self.prices, before)
         self.assertEqual(int(self.table.target_vol_5d.isna().sum()), 5)
-

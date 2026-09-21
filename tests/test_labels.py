@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from nasdaq_volatility_lab.build_table import build_feature_table
+from nasdaq_volatility_lab.features import build_feature_table
 
 
 class LabelChecks(unittest.TestCase):
@@ -17,7 +17,7 @@ class LabelChecks(unittest.TestCase):
         table = build_feature_table(prices, prices.copy())
         date = table.index[3]
         position = dates.get_loc(date)
-        future_prices = closes[position:position + 6]
+        future_prices = closes[position : position + 6]
         returns = [math.log(b / a) for a, b in zip(future_prices, future_prices[1:])]
         expected = math.sqrt(252 / 5 * math.fsum(r * r for r in returns))
         self.assertAlmostEqual(table.loc[date, "target_vol_5d"], expected)
@@ -28,4 +28,6 @@ class LabelChecks(unittest.TestCase):
         changed = prices.copy()
         changed.loc[dates[position + 5], "Close"] *= 1.1
         changed_table = build_feature_table(changed, prices)
-        self.assertNotEqual(table.loc[date, "target_vol_5d"], changed_table.loc[date, "target_vol_5d"])
+        self.assertNotEqual(
+            table.loc[date, "target_vol_5d"], changed_table.loc[date, "target_vol_5d"]
+        )
